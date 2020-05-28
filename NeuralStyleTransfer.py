@@ -36,7 +36,7 @@ def load_img(img_path):
     # 图片归一化，将image的每个像素的3个intRGB转化为32位浮点数
     # 图片最终应该是384*512*3，然后每一项都是32位浮点数
     shape = tf.cast(tf.shape(image)[:-1], tf.float32)
-    # 将图片变为张量，先将图片的最后一维去掉（变为384*512），再将图片尺寸（本来为int型整数）转化为浮点数（384*512变为384.0*512.0）
+    # 获取图片尺寸的张量，先将图片的最后一维像素值去掉（变为384*512），再将图片尺寸（本来为int型整数）转化为浮点数（384*512变为384.0*512.0）
     long_dim = max(shape)
     scale = max_dim / long_dim
     new_shape = tf.cast(shape * scale, tf.int32)
@@ -61,7 +61,7 @@ def vgg_layers(layer_names):
     vgg.trainable = False
 
     outputs = [vgg.get_layer(name).output for name in layer_names]
-
+    # 将input和output组合成为模型
     model = tf.keras.Model([vgg.input], outputs)
     return model
 
@@ -69,8 +69,10 @@ def vgg_layers(layer_names):
 '''
 下面方法用于计算Gram矩阵
 '''
-def gram_matrix(input_tensor):
-  result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor)
+def get_gram_matrix(input_tensor):
+
+  result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor) # result[b,c,d] = sum_j input_tensor[b,i,j,c] * input_tensor[b,i,j,d]
+  print(tf.shape(result))
   input_shape = tf.shape(input_tensor)
   num_locations = tf.cast(input_shape[1]*input_shape[2], tf.float32)
   return result/(num_locations)
@@ -90,20 +92,20 @@ class StyleContentModel(tf.keras.models.Model):
         self.num_style_layers = len(style_layers)
         self.vgg.trainable = False
 
-    def call(self, inputs):
+    def __call__(self, inputs):
         "Expects float input in [0,1]"
-        inputs = inputs * 255.0
-        preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs)
+        preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs*255.0)
         outputs = self.vgg(preprocessed_input)
         style_outputs, content_outputs = (outputs[:self.num_style_layers],
                                           outputs[self.num_style_layers:])
 
-        style_outputs = [gram_matrix(style_output)
+        style_outputs = [get_gram_matrix(style_output)
                          for style_output in style_outputs]
 
         content_dict = {content_name: value
                         for content_name, value
                         in zip(self.content_layers, content_outputs)}
+
 
         style_dict = {style_name: value
                       for style_name, value
@@ -120,15 +122,28 @@ def clip_0_1(image):
 def style_content_loss(outputs):
     style_outputs = outputs['style']
     content_outputs = outputs['content']
+
+    # 使用最简单的均方误差和作为损失函数
     style_loss = tf.add_n([tf.reduce_mean((style_outputs[name]-style_targets[name])**2)
                            for name in style_outputs.keys()])
-    style_loss *= style_weight / num_style_layers
 
     content_loss = tf.add_n([tf.reduce_mean((content_outputs[name]-content_targets[name])**2)
                              for name in content_outputs.keys()])
-    content_loss *= content_weight / num_content_layers
-    loss = style_loss + content_loss
+
+    loss = style_weight/num_style_layers*style_loss + content_weight/num_content_layers*content_loss
     return loss
+
+'''优化部分'''
+def high_pass_x_y(image):
+  x_var = image[:,:,1:,:] - image[:,:,:-1,:]
+  y_var = image[:,1:,:,:] - image[:,:-1,:,:]
+
+  return x_var, y_var
+
+'''优化部分'''
+def total_variation_loss(image):
+  x_deltas, y_deltas = high_pass_x_y(image)
+  return tf.reduce_mean(x_deltas**2) + tf.reduce_mean(y_deltas**2)
 
 '''用于更新图像'''
 @tf.function()
@@ -136,6 +151,7 @@ def train_step(image):
   with tf.GradientTape() as tape:
     outputs = extractor(image)
     loss = style_content_loss(outputs)# 获得损失值
+    loss += total_variation_weight * total_variation_loss(image)
 
   grad = tape.gradient(loss, image)
   opt.apply_gradients([(grad, image)])
@@ -225,6 +241,7 @@ if __name__ == "__main__":
     style_weight = 1e-2
     content_weight = 1e4
     # 使用两个损失的加权组合来获得总损失，这在style_content_loss方法中被使用到
+    total_variation_weight = 1e8
 
 
     showImage(image.read_value())
@@ -232,8 +249,8 @@ if __name__ == "__main__":
     '''下面进行一段很长很长的优化'''
     start = time.time()
 
-    epochs = 5
-    steps_per_epoch = 50
+    epochs = 10
+    steps_per_epoch = 100
 
     step = 0
     for n in range(epochs):
