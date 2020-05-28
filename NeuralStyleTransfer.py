@@ -54,7 +54,7 @@ def showImage(image, title=None):
     if title:
         plt.title(title)
 
-
+'''因为不是所有的VGG层都要用到，所以设置了这个方法，输入你要用的层名，返回包含这个层的模型'''
 def vgg_layers(layer_names):
     # 加载模型。 加载已经在 imagenet 数据上预训练的 VGG
     vgg = tf.keras.applications.VGG19(include_top=False, weights='imagenet')
@@ -82,29 +82,32 @@ def gram_matrix(input_tensor):
 class StyleContentModel(tf.keras.models.Model):
     def __init__(self, style_layers, content_layers):
         super(StyleContentModel, self).__init__()
-        self.content_extractor = vgg_layers(content_layers)
-        self.style_extractor = vgg_layers(style_layers)
+        self.vgg = vgg_layers(style_layers + content_layers)
 
         self.style_layers = style_layers
         self.content_layers = content_layers
+
         self.num_style_layers = len(style_layers)
         self.vgg.trainable = False
 
     def call(self, inputs):
         "Expects float input in [0,1]"
-        preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs*255.0)
-        style_outputs = self.style_extractor(preprocessed_input)
-        content_outputs = self.content_extractor(preprocessed_input)
+        inputs = inputs * 255.0
+        preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs)
+        outputs = self.vgg(preprocessed_input)
+        style_outputs, content_outputs = (outputs[:self.num_style_layers],
+                                          outputs[self.num_style_layers:])
 
-        # 风格计算需要对提取的特征计算gram矩阵，内容计算直接使用提取的特征就行
         style_outputs = [gram_matrix(style_output)
                          for style_output in style_outputs]
 
         content_dict = {content_name: value
-                        for content_name, value in zip(self.content_layers, content_outputs)}# zip函数把输入转化为一个元组
+                        for content_name, value
+                        in zip(self.content_layers, content_outputs)}
 
         style_dict = {style_name: value
-                      for style_name, value in zip(self.style_layers, style_outputs)}
+                      for style_name, value
+                      in zip(self.style_layers, style_outputs)}
 
         return {'content': content_dict, 'style': style_dict}
 
@@ -214,7 +217,7 @@ if __name__ == "__main__":
     # 这两个直接提取出了风格和内容的目标值
 
     image = tf.Variable(content_image)
-    # 这个是目标图像，首先让他和内容图像形状一样
+    # 这个是目标图像，首先让他和内容图像形状一样（Variable是用于初始化的函数）
 
     opt = tf.optimizers.Adam(learning_rate=0.02, beta_1=0.99, epsilon=1e-1)
     # 优化函数，这在train_step方法中被使用到
@@ -223,6 +226,8 @@ if __name__ == "__main__":
     content_weight = 1e4
     # 使用两个损失的加权组合来获得总损失，这在style_content_loss方法中被使用到
 
+
+    showImage(image.read_value())
 
     '''下面进行一段很长很长的优化'''
     start = time.time()
