@@ -67,9 +67,7 @@ def vgg_layers(layer_names):
 
 
 '''
-下面方法用于风格计算
-事实证明，图像的风格可以通过不同 feature maps (特征图)上的平均值和相关性来描述。 
-通过在每个位置计算 feature (特征)向量的外积，并在所有位置对该外积进行平均,可以计算出包含此信息的 Gram 矩阵
+下面方法用于计算Gram矩阵
 '''
 def gram_matrix(input_tensor):
   result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor)
@@ -78,13 +76,15 @@ def gram_matrix(input_tensor):
   return result/(num_locations)
 
 
-'''这个类用于返回风格和内容张量的模型
+'''
 该类调用了vgg_layers方法和gram_matrix方法
-在图像上调用此模型，可以返回 style_layers 的 gram 矩阵（风格）和 content_layers 的内容'''
+在图像上调用此模型，可以返回 style_layers 的 gram 矩阵和 content_layers 的内容，用于后面的梯度下降'''
 class StyleContentModel(tf.keras.models.Model):
     def __init__(self, style_layers, content_layers):
         super(StyleContentModel, self).__init__()
-        self.vgg = vgg_layers(style_layers + content_layers)
+        self.content_extractor = vgg_layers(content_layers)
+        self.style_extractor = vgg_layers(style_layers)
+
         self.style_layers = style_layers
         self.content_layers = content_layers
         self.num_style_layers = len(style_layers)
@@ -92,22 +92,19 @@ class StyleContentModel(tf.keras.models.Model):
 
     def call(self, inputs):
         "Expects float input in [0,1]"
-        inputs = inputs * 255.0
-        preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs)
-        outputs = self.vgg(preprocessed_input)
-        style_outputs, content_outputs = (outputs[:self.num_style_layers],
-                                          outputs[self.num_style_layers:])
+        preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs*255.0)
+        style_outputs = self.style_extractor(preprocessed_input)
+        content_outputs = self.content_extractor(preprocessed_input)
 
+        # 风格计算需要对提取的特征计算gram矩阵，内容计算直接使用提取的特征就行
         style_outputs = [gram_matrix(style_output)
                          for style_output in style_outputs]
 
         content_dict = {content_name: value
-                        for content_name, value
-                        in zip(self.content_layers, content_outputs)}
+                        for content_name, value in zip(self.content_layers, content_outputs)}# zip函数把输入转化为一个元组
 
         style_dict = {style_name: value
-                      for style_name, value
-                      in zip(self.style_layers, style_outputs)}
+                      for style_name, value in zip(self.style_layers, style_outputs)}
 
         return {'content': content_dict, 'style': style_dict}
 
@@ -162,14 +159,6 @@ if __name__ == "__main__":
     下面进行训练
     使用的是VGG19网络，这是一个已经预训练好的用于分类的神经网络
     '''
-    x = tf.keras.applications.vgg19.preprocess_input(content_image * 255)
-    x = tf.image.resize(x, (224, 224))
-    vgg = tf.keras.applications.VGG19(include_top=True, weights='imagenet')
-    prediction_probabilities = vgg(x)
-    prediction_probabilities.shape
-
-    predicted_top_5 = tf.keras.applications.vgg19.decode_predictions(prediction_probabilities.numpy())[0]
-    [(class_name, prob) for (number, class_name, prob) in predicted_top_5]
     '''下面加载没有分类部分的VGG19，并列出各层名称
     前几层是边缘、纹理等低级特征
     后几层是高级特征，如轮子、眼睛、嘴巴等'''
@@ -178,10 +167,10 @@ if __name__ == "__main__":
     for layer in vgg.layers:
         print(layer.name)
 
-    # 内容层将提取出我们的 feature maps （特征图）
+    # 选择用于表示内容的层，因为底层注重细节，高层注重整体，所以表示内容的话选择中间层最好
     content_layers = ['block5_conv2']
 
-    # 我们感兴趣的风格层
+    # 选择用于表示风格的层，瞎选就完事了
     style_layers = ['block1_conv1',
                     'block2_conv1',
                     'block3_conv1',
@@ -190,32 +179,14 @@ if __name__ == "__main__":
 
     num_content_layers = len(content_layers)
     num_style_layers = len(style_layers)
-    '''
-    那么,为什么我们预训练的图像分类网络中的这些中间层的输出允许我们定义风格和内容的表示？
-    从高层理解，为了使网络能够实现图像分类（该网络已被训练过），它必须理解图像。 
-    这需要将原始图像作为输入像素并构建内部表示，这个内部表示将原始图像像素转换为对图像中存在的 feature (特征)的复杂理解。
-    这也是卷积神经网络能够很好地推广的一个原因：它们能够捕获不变性并定义类别（例如猫与狗）之间的 feature (特征)，这些 feature (特征)与背景噪声和其他干扰无关。 
-    因此，将原始图像传递到模型输入和分类标签输出之间的某处的这一过程，可以视作复杂的 feature (特征)提取器。
-    通过这些模型的中间层，我们就可以描述输入图像的内容和风格
-    '''
-    style_extractor = vgg_layers(style_layers)
-    style_outputs = style_extractor(style_image * 255)
 
-    # 查看每层输出的统计信息
-    for name, output in zip(style_layers, style_outputs):
-        print(name)
-        print("  shape: ", output.numpy().shape)
-        print("  min: ", output.numpy().min())
-        print("  max: ", output.numpy().max())
-        print("  mean: ", output.numpy().mean())
-        print()
 
 
 
 
     '''在图像上调用此模型'''
     extractor = StyleContentModel(style_layers, content_layers)
-    results = extractor(tf.constant(content_image))
+    results = extractor(tf.constant(content_image)) # 这一步就是调用了StyleContentModel的call函数
     style_results = results['style']
     print('Styles:')
     for name, output in sorted(results['style'].items()):
