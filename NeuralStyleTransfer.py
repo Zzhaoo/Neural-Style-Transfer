@@ -38,8 +38,7 @@ def load_img(img_path):
     shape = tf.cast(tf.shape(image)[:-1], tf.float32)
     # 获取图片尺寸的张量，先将图片的最后一维像素值去掉（变为384*512），再将图片尺寸（本来为int型整数）转化为浮点数（384*512变为384.0*512.0）
     long_dim = max(shape)
-    scale = max_dim / long_dim
-    new_shape = tf.cast(shape * scale, tf.int32)
+    new_shape = tf.cast(shape * max_dim / long_dim, tf.int32)
     image = tf.image.resize(image, new_shape)
     # 这一步将图片进行适当的缩小或放大，使得较长边变为512像素
     image = image[tf.newaxis, :]
@@ -54,7 +53,7 @@ def showImage(image, title=None):
     if title:
         plt.title(title)
 
-'''因为不是所有的VGG层都要用到，所以设置了这个方法，输入你要用的层名，返回包含这个层的模型'''
+'''因为不是所有的VGG层都要用到，所以设置了这个方法，输入你要用的层名，返回包含这些层的模型'''
 def vgg_layers(layer_names):
     # 加载模型。 加载已经在 imagenet 数据上预训练的 VGG
     vgg = tf.keras.applications.VGG19(include_top=False, weights='imagenet')
@@ -70,12 +69,11 @@ def vgg_layers(layer_names):
 下面方法用于计算Gram矩阵
 '''
 def get_gram_matrix(input_tensor):
-
-  result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor) # result[b,c,d] = sum_j input_tensor[b,i,j,c] * input_tensor[b,i,j,d]
-  print(tf.shape(result))
-  input_shape = tf.shape(input_tensor)
-  num_locations = tf.cast(input_shape[1]*input_shape[2], tf.float32)
-  return result/(num_locations)
+    # 先算输入矩阵的外积，再求平均
+    result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor) # result[b,c,d] = sum_j input_tensor[b,i,j,c] * input_tensor[b,i,j,d]
+    input_shape = tf.shape(input_tensor)
+    num_locations = tf.cast(input_shape[1]*input_shape[2], tf.float32)
+    return result/(num_locations)
 
 
 '''
@@ -96,9 +94,10 @@ class StyleContentModel(tf.keras.models.Model):
         "Expects float input in [0,1]"
         preprocessed_input = tf.keras.applications.vgg19.preprocess_input(inputs*255.0)
         outputs = self.vgg(preprocessed_input)
+        # 获取vgg输出的特征层和内容层的输出
         style_outputs, content_outputs = (outputs[:self.num_style_layers],
                                           outputs[self.num_style_layers:])
-
+        # 对风格特征输出求gram矩阵
         style_outputs = [get_gram_matrix(style_output)
                          for style_output in style_outputs]
 
@@ -118,7 +117,7 @@ def clip_0_1(image):
   return tf.clip_by_value(image, clip_value_min=0.0, clip_value_max=1.0)
 
 
-'''返回loss'''
+'''返回联合loss'''
 def style_content_loss(outputs):
     style_outputs = outputs['style']
     content_outputs = outputs['content']
@@ -133,19 +132,18 @@ def style_content_loss(outputs):
     loss = style_weight/num_style_layers*style_loss + content_weight/num_content_layers*content_loss
     return loss
 
-'''优化部分'''
+'''优化部分，将高频分量损失也算到损失函数中'''
 def high_pass_x_y(image):
   x_var = image[:,:,1:,:] - image[:,:,:-1,:]
   y_var = image[:,1:,:,:] - image[:,:-1,:,:]
-
   return x_var, y_var
 
-'''优化部分'''
+'''优化部分，将高频分量损失也算到损失函数中'''
 def total_variation_loss(image):
   x_deltas, y_deltas = high_pass_x_y(image)
   return tf.reduce_mean(x_deltas**2) + tf.reduce_mean(y_deltas**2)
 
-'''用于更新图像'''
+'''训练'''
 @tf.function()
 def train_step(image):
   with tf.GradientTape() as tape:
@@ -158,10 +156,8 @@ def train_step(image):
   image.assign(clip_0_1(image))# 使图片像素值在0-1内
 
 if __name__ == "__main__":
-    content_path = tf.keras.utils.get_file('turtle.jpg',
-                                           'https://storage.googleapis.com/download.tensorflow.org/example_images/Green_Sea_Turtle_grazing_seagrass.jpg')
-    style_path = tf.keras.utils.get_file('kandinsky.jpg',
-                                         'https://storage.googleapis.com/download.tensorflow.org/example_images/Vassily_Kandinsky%2C_1913_-_Composition_7.jpg')
+    content_path = "浦东梵高/city.jpg"
+    style_path = "浦东梵高/starnight.jpg"
     # 这一步是下载了两张图片，第一张是一张海龟图片，第二张是风格图片
     content_image = load_img(content_path)
     style_image = load_img(style_path)
@@ -189,12 +185,12 @@ if __name__ == "__main__":
     # 选择用于表示内容的层，因为底层注重细节，高层注重整体，所以表示内容的话选择中间层最好
     content_layers = ['block5_conv2']
 
-    # 选择用于表示风格的层，瞎选就完事了
-    style_layers = ['block1_conv1',
-                    'block2_conv1',
-                    'block3_conv1',
-                    'block4_conv1',
-                    'block5_conv1']
+    # 选择用于表示风格的层
+    style_layers = ['block1_conv2',
+                    'block2_conv2',
+                    'block3_conv2',
+                    'block4_conv2',
+                    'block5_conv2']
 
     num_content_layers = len(content_layers)
     num_style_layers = len(style_layers)
@@ -203,38 +199,15 @@ if __name__ == "__main__":
 
 
 
-    '''在图像上调用此模型'''
+    '''构建提取器'''
     extractor = StyleContentModel(style_layers, content_layers)
-    results = extractor(tf.constant(content_image)) # 这一步就是调用了StyleContentModel的call函数
-    style_results = results['style']
-    print('Styles:')
-    for name, output in sorted(results['style'].items()):
-        print("  ", name)
-        print("    shape: ", output.numpy().shape)
-        print("    min: ", output.numpy().min())
-        print("    max: ", output.numpy().max())
-        print("    mean: ", output.numpy().mean())
-        print()
-
-    print("Contents:")
-    for name, output in sorted(results['content'].items()):
-        print("  ", name)
-        print("    shape: ", output.numpy().shape)
-        print("    min: ", output.numpy().min())
-        print("    max: ", output.numpy().max())
-        print("    mean: ", output.numpy().mean())
-
-
-
-    '''梯度下降'''
-    '''计算每个图像的输出和目标的均方误差，然后取这些损失值的加权和。'''
+    '''获取风格图片的风格层输出和内容图片的内容层输出'''
     style_targets = extractor(style_image)['style']
     content_targets = extractor(content_image)['content']
     # 这两个直接提取出了风格和内容的目标值
 
     image = tf.Variable(content_image)
     # 这个是目标图像，首先让他和内容图像形状一样（Variable是用于初始化的函数）
-
     opt = tf.optimizers.Adam(learning_rate=0.02, beta_1=0.99, epsilon=1e-1)
     # 优化函数，这在train_step方法中被使用到
 
@@ -242,6 +215,7 @@ if __name__ == "__main__":
     content_weight = 1e4
     # 使用两个损失的加权组合来获得总损失，这在style_content_loss方法中被使用到
     total_variation_weight = 1e8
+    # 上面是高频分量的损失
 
 
     showImage(image.read_value())
@@ -250,7 +224,7 @@ if __name__ == "__main__":
     start = time.time()
 
     epochs = 10
-    steps_per_epoch = 100
+    steps_per_epoch = 50
 
     step = 0
     for n in range(epochs):
@@ -262,6 +236,5 @@ if __name__ == "__main__":
         showImage(image.read_value())
         plt.title("Train step: {}".format(step))
         plt.show()
-
     end = time.time()
     print("Total time: {:.1f}".format(end - start))
