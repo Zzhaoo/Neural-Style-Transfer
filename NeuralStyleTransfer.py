@@ -18,7 +18,7 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 
-
+#加载图片源
 def load_img(img_path):
     #这个方法是为了加载图片，因为图片的较长边要被限制在512像素
     max_dim = 512
@@ -44,6 +44,7 @@ def load_img(img_path):
     image = image[tf.newaxis, :]
     return image
 
+#显示加载好的图片
 def showImage(image, title=None):
     if len(image.shape) > 3:
         image = tf.squeeze(image,axis=0)
@@ -156,18 +157,18 @@ def train_step(image):
   image.assign(clip_0_1(image))# 使图片像素值在0-1内
 
 if __name__ == "__main__":
-    content_path = "浦东梵高/city.jpg"
-    style_path = "浦东梵高/starnight.jpg"
-    # 这一步是下载了两张图片，第一张是一张海龟图片，第二张是风格图片
+    content_path = "city.jpg"
+    style_path = "starnight.jpg"
+    # 这一步是下载了两张图片，第一张是一浦东内容图片，第二张是梵高风格图片
     content_image = load_img(content_path)
     style_image = load_img(style_path)
 
     plt.subplot(1, 2, 1)
-    # 将当前画图区域分为1行2列，当前为位置1
+    # 将当前画图区域分为1行2列，当前为位置1，这是内容图像
     showImage(content_image, 'Content_image')
 
     plt.subplot(1, 2, 2)
-    # 将当前画图区域分为1行2列，当前为位置2
+    # 将当前画图区域分为1行2列，当前为位置2，这是风格图像
     showImage(style_image, 'Style_image')
 
     '''
@@ -177,7 +178,10 @@ if __name__ == "__main__":
     '''下面加载没有分类部分的VGG19，并列出各层名称
     前几层是边缘、纹理等低级特征
     后几层是高级特征，如轮子、眼睛、嘴巴等'''
+
+    #从github上下载vgg19网络，并列出各层的名字
     vgg = tf.keras.applications.VGG19(include_top=False, weights='imagenet')
+
     print()
     for layer in vgg.layers:
         print(layer.name)
@@ -196,9 +200,6 @@ if __name__ == "__main__":
     num_style_layers = len(style_layers)
 
 
-
-
-
     '''构建提取器'''
     extractor = StyleContentModel(style_layers, content_layers)
     '''获取风格图片的风格层输出和内容图片的内容层输出'''
@@ -215,9 +216,7 @@ if __name__ == "__main__":
     content_weight = 1e4
     # 使用两个损失的加权组合来获得总损失，这在style_content_loss方法中被使用到
     total_variation_weight = 1e8
-    # 上面是高频分量的损失
-
-
+    # 上面是高频分量的损
     showImage(image.read_value())
 
     '''下面进行一段很长很长的优化'''
